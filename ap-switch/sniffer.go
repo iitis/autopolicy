@@ -4,7 +4,8 @@ import (
 	"net"
 	"time"
 	"fmt"
-	"github.com/google/gopacket/pcap"
+	"github.com/google/gopacket/pcapgo" // slow but portable
+	"golang.org/x/net/bpf"
 )
 
 type SnifferMsg struct {
@@ -14,15 +15,11 @@ type SnifferMsg struct {
 }
 
 func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
-	var pkt []byte
-	var db map[string]int64
-	
 	for inerr := 0; true; time.Sleep(time.Second) {
-		// reset the database for this interface
-		db = make(map[string]int64)
-
 		// try listening to the first 64 bytes (enough for link+ip4/6 headers)
-		h, err := pcap.OpenLive(iface, 64, false, pcap.BlockForever)
+		// h, err := pcap.OpenLive(iface, 64, false, pcap.BlockForever)
+		//h, err := afpacket.NewTPacket(afpacket.OptInterface(iface))
+		h, err := pcapgo.NewEthernetHandle(iface)
 		if err != nil {
 			if inerr != 1 { dbgErr(2, "sniffer", err); inerr = 1; }
 			continue
@@ -30,26 +27,40 @@ func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
 			inerr = 0
 		}
 
-		// check if link type == Ethernet
-		if h.LinkType() != 1 {
-			die("sniffer", "invalid link type on %s: %d", iface, h.LinkType())
-		}
-
-		// only inbound traffic
-		err = h.SetDirection(pcap.DirectionIn)
+		// set capture length
+		err = h.SetCaptureLength(64)
 		if err != nil {
 			dieErr("sniffer", err)
 		}
 
 		// attach a BPF filter: inbound ARP (for IPv4) or NDP Neighbor Solicitation (for IPv6)
-		err = h.SetBPFFilter("arp or (icmp6 and ip6[40] == 135)")
+		// tcpdump -s 64 -dd "inbound and (arp or (icmp6 and ip6[40] == 135))"
+		err = h.SetBPF([]bpf.RawInstruction{
+			{ 0x28, 0, 0, 0xfffff004 },
+			{ 0x15, 11, 0, 0x00000004 },
+			{ 0x28, 0, 0, 0x0000000c },
+			{ 0x15, 8, 0, 0x00000806 },
+			{ 0x15, 0, 8, 0x000086dd },
+			{ 0x30, 0, 0, 0x00000014 },
+			{ 0x15, 3, 0, 0x0000003a },
+			{ 0x15, 0, 5, 0x0000002c },
+			{ 0x30, 0, 0, 0x00000036 },
+			{ 0x15, 0, 3, 0x0000003a },
+			{ 0x30, 0, 0, 0x00000036 },
+			{ 0x15, 0, 1, 0x00000087 },
+			{ 0x6, 0, 0, 0x00000040 },
+			{ 0x6, 0, 0, 0x00000000 },
+		})
 		if err != nil {
 			dieErr("sniffer", err)
 		}
 
+		// reset the database for this interface
+		db := make(map[string]int64)
+
 		// read from socket
 		for {
-			pkt, _, err = h.ZeroCopyReadPacketData()
+			pkt, ci, err := h.ZeroCopyReadPacketData()
 			if err != nil { break }
 
 			// packet too short?
@@ -60,17 +71,19 @@ func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
 			off := 6
 			mac = append(mac, pkt[off:off+6]...)
 
-			// is 802.1Q or 802.1ad? ignore
-			off += 6
-			if pkt[off] == 0x81 && pkt[off+1] == 0x00 {
-				dbg(5, "sniffer", "%s: MAC %s: ignoring 802.1Q VLAN frame", iface, mac)
-				continue // off += 4 // single tag
-			} else if pkt[off] == 0x88 && pkt[off+1] == 0xa8 {
-				dbg(5, "sniffer", "%s: MAC %s: ignoring 802.1ad VLAN frame", iface, mac)
-				continue // off += 8 // double tag
+			// is source MAC broadcast?
+			if IsMACBroadcast(mac) { continue }
+
+			// is VLAN? ignore
+			if len(ci.AncillaryData) > 0 {
+				if vlan, ok := ci.AncillaryData[0].(int); ok {
+					dbg(5, "sniffer", "%s: MAC %s: ignoring VLAN %d frame", iface, mac, vlan)
+					continue
+				}
 			}
 
 			// read ethertype
+			off += 6
 			etype := uint16(pkt[off]) << 8 | uint16(pkt[off+1])
 			if etype < 1536 { continue } // ignore
 
@@ -89,9 +102,20 @@ func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
 			}
 
 			// invalid IP?
-			if !ip.IsGlobalUnicast() {
+			switch {
+			case len(ip) == 16 && ip[0] & 0b11100000 != 0x20:
+				dbg(5, "sniffer", "%s: MAC %s: IPv6 %s outside of 2000::/3", iface, mac, ip)
+				continue
+			case !ip.IsGlobalUnicast():
 				dbg(5, "sniffer", "%s: MAC %s: ignoring IP %s", iface, mac, ip)
 				continue
+			}
+
+			// invalid MAC? this really shouldn't happen with a global unicast source address, right?
+			if len(ip) == 4 {
+				if IsMACMulticastIPv4(mac) { continue }
+			} else {
+				if IsMACMulticastIPv6(mac) { continue }
 			}
 
 			// already in db?
@@ -116,4 +140,18 @@ func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
 		// prepare to re-open
 		h.Close()
 	}
+}
+
+// from https://github.com/newtools/zsocket/blob/master/nettypes/ethframe.go
+func IsMACBroadcast(addr net.HardwareAddr) bool {
+	return addr[0] == 0xFF && addr[1] == 0xFF && addr[2] == 0xFF &&
+	       addr[3] == 0xFF && addr[4] == 0xFF && addr[5] == 0xFF
+}
+
+func IsMACMulticastIPv4(addr net.HardwareAddr) bool {
+	return addr[0] == 0x01 && addr[1] == 0x00 && addr[2] == 0x5E
+}
+
+func IsMACMulticastIPv6(addr net.HardwareAddr) bool {
+	return addr[0] == 0x33 && addr[1] == 0x33
 }
