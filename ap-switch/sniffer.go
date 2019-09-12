@@ -14,11 +14,9 @@ type SnifferMsg struct {
 	ip         net.IP
 }
 
-func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
+func (S *Switch) sniffer(iface string) {
 	for inerr := 0; true; time.Sleep(time.Second) {
 		// try listening to the first 64 bytes (enough for link+ip4/6 headers)
-		// h, err := pcap.OpenLive(iface, 64, false, pcap.BlockForever)
-		//h, err := afpacket.NewTPacket(afpacket.OptInterface(iface))
 		h, err := pcapgo.NewEthernetHandle(iface)
 		if err != nil {
 			if inerr != 1 { dbgErr(2, "sniffer", err); inerr = 1; }
@@ -61,7 +59,12 @@ func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
 		// read from socket
 		for {
 			pkt, ci, err := h.ZeroCopyReadPacketData()
-			if err != nil { break }
+			if err != nil {
+				if inerr != 2 { dbgErr(2, "sniffer", err); inerr = 2; }
+				break
+			} else if inerr == 2 {
+				inerr = 0
+			}
 
 			// packet too short?
 			if len(pkt) < 34 { continue }
@@ -123,18 +126,18 @@ func (S *Switch) sniffer(iface string, out chan SnifferMsg) {
 			if t, ok := db[key]; ok && t > time.Now().Unix() {
 				continue // a duplicate (already seen)
 			} else { // set a timeout
-				db[key] = time.Now().Unix() + 86400 // 1 day, TODO: random delay
+				// need random eviction?
+				if len(db) >= 1e6 {
+					for key2 := range db {
+						delete(db, key2)
+						break
+					}
+				}
+				db[key] = time.Now().Unix() + 3600 // 1h timeout
 			}
 
-			// print
-			out <- SnifferMsg{iface, mac, ip}
-		}
-
-		// broke due to error?
-		if err != nil {
-			if inerr != 2 { dbgErr(2, "sniffer", err); inerr = 2; }
-		} else {
-			inerr = 0
+			// new MAC-IP seen
+			S.snifferq <- SnifferMsg{iface, mac, ip}
 		}
 
 		// prepare to re-open
