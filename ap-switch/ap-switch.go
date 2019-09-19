@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"os/signal"
 	"os"
 	"context"
@@ -22,7 +23,8 @@ const (
 )
 
 type Switch struct {
-	ctx context.Context
+	ctx   context.Context
+	http  http.Client
 
 	opts struct {
 		dbg            int
@@ -98,6 +100,10 @@ func main() {
 			die("main", "tc setup failed: %s", err)
 		}
 	}
+
+	S.http_init()
+
+	// -------------------------------------
 
 	// start sniffers
 	S.snifferq = make(chan SnifferMsg, 100)

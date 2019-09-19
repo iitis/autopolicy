@@ -30,6 +30,7 @@ func (S *Switch) auth(st *State) {
 		st.mutex.Lock()
 		timeout = st.timeout
 		state = st.state
+		ip = ip[:0]
 		ip = append(ip, st.lastip...)
 		st.mutex.Unlock()
 
@@ -38,12 +39,16 @@ func (S *Switch) auth(st *State) {
 			return
 		}
 
-		// TODO: curl it!
+		// curl it! ;)
 		dbg(3, "auth", "%s/%s: authenticating on IP %s (try %d)", st.iface, st.mac, ip, i)
+		foo, err := S.http_get("http://" + ip.String() + "/.autopolicy/identity.json")
+		if err == nil {
+			println(string(foo))
+			break // success
+		}
 
-		// TODO
-		break // success!
-
+		// retry
+		dbg(2, "auth", "%s/%s: could not fetch identity: %s", st.iface, st.mac, err)
 		time.Sleep(AUTH_RETRY_TIMEOUT)
 	}
 	dbg(1, "auth", "%s/%s: authenticated", st.iface, st.mac)

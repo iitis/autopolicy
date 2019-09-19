@@ -72,6 +72,8 @@ func (S *Switch) tc_init(iface string) error {
 	err := S.tc_run("qdisc", "add", "dev", iface, "handle", "ffff:", "ingress")
 	if err != nil { return err }
 
+	// FIXME: allow for identity fetching
+
 	return S.tc_run("filter", "add", "dev", iface, "parent", "ffff:",
 		"prio", "2", "protocol", "ip",
 		"matchall",
