@@ -15,8 +15,8 @@ const (
 	AUTH_TIMEOUT = 300e9           // authentication timeout (in seconds)
 	AUTH_RETRY_TIMEOUT = 10e9      // how quickly to retry auth attempts
 
-	AUTHZ_TIMEOUT = 30e9           // authorization timeout (in seconds)
-	AUTHZ_RETRY_TIMEOUT = 1e9      // how quickly to retry authz attempts
+	AUTHZ_TIMEOUT = 60e9           // authorization timeout (in seconds)
+	AUTHZ_RETRY_TIMEOUT = 10e9      // how quickly to retry authz attempts
 
 	PROV_TIMEOUT = 3e9             // provision timeout (in seconds)
 	PROV_RETRY_TIMEOUT = 1e9       // how quickly to retry provision attempts
@@ -30,6 +30,7 @@ type Switch struct {
 		dbg            int
 		// --
 		ifaces         []string
+		authserver     string
 	}
 	
 	snifferq           chan SnifferMsg         // MAC-IP sniffer output
@@ -81,6 +82,7 @@ func main() {
 
 	// command-line args
 	flag.IntVar(&S.opts.dbg, "dbg", 2, "debugging level")
+	flag.StringVar(&S.opts.authserver, "server", "http://localhost", "authorization server")
 
 	flag.Parse()
 	dbgSet(S.opts.dbg)
@@ -97,6 +99,7 @@ func main() {
 	for _, iface := range S.opts.ifaces {
 		S.tc_cleanup(iface) // ignore errors
 		if err := S.tc_init(iface); err != nil {
+			S.tc_cleanup(iface) // ignore errors
 			die("main", "tc setup failed: %s", err)
 		}
 	}

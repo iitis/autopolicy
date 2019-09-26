@@ -123,7 +123,7 @@ func (S *Switch) sniffer(iface string) {
 
 			// already in db?
 			key := fmt.Sprintf("%s/%s", mac, ip)
-			if t, ok := db[key]; ok && t > time.Now().Unix() {
+			if t, ok := db[key]; ok && t > nanotime() {
 				continue // a duplicate (already seen)
 			} else { // set a timeout
 				// need random eviction?
@@ -133,7 +133,7 @@ func (S *Switch) sniffer(iface string) {
 						break
 					}
 				}
-				db[key] = time.Now().Unix() + 3600 // 1h timeout
+				db[key] = nanotime() + 60e9 // 1 min timeout
 			}
 
 			// new MAC-IP seen

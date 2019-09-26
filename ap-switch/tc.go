@@ -37,7 +37,7 @@ func (S *Switch) tc_run(args ...string) error {
 
 	// run it and wait till end
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %s", err, strings.TrimSpace(buf.String()))
+		return fmt.Errorf("%s: %s %s", err, strings.TrimSpace(buf.String()), args)
 	}
 
 	return nil
@@ -69,13 +69,33 @@ func (S *Switch) tc_cleanup(iface string) error {
 }
 
 func (S *Switch) tc_init(iface string) error {
+	// add ingress queue
 	err := S.tc_run("qdisc", "add", "dev", iface, "handle", "ffff:", "ingress")
 	if err != nil { return err }
 
-	// FIXME: allow for identity fetching
+	// allow for IP communication with this host
+	addrs, err := net.InterfaceAddrs()
+	if err != nil { return err }
+	for i := range addrs {
+		// check if IP is OK
+		addr, ok := addrs[i].(*net.IPNet)
+		if !ok { continue }
+		if !addr.IP.IsGlobalUnicast() { continue }
 
+		// ipv6?
+		ip := "ip"
+		if addr.IP.To4() == nil { ip = "ip6" }
+
+		err = S.tc_run("filter", "add", "dev", iface, "parent", "ffff:",
+			"prio", "99", "protocol", "ip",
+			"u32", "match", ip, "dst", addr.IP.String(),
+			"action", "gact", "ok")
+		if err != nil { return err }
+	}
+
+	// if nothing matches, drop all traffic
 	return S.tc_run("filter", "add", "dev", iface, "parent", "ffff:",
-		"prio", "2", "protocol", "ip",
+		"prio", "100", "protocol", "ip",
 		"matchall",
 		"action", "drop")
 }

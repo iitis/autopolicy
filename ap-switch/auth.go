@@ -9,6 +9,8 @@ import (
 // auth tries to move state from STATE_NEEDS_AUTH to STATE_ON
 func (S *Switch) auth(st *State) {
 	var ip net.IP
+	var identity, profile []byte
+	var err error
 
 	// check starting point
 	st.mutex.RLock()
@@ -41,11 +43,11 @@ func (S *Switch) auth(st *State) {
 
 		// curl it! ;)
 		dbg(3, "auth", "%s/%s: authenticating on IP %s (try %d)", st.iface, st.mac, ip, i)
-		foo, err := S.http_get("http://" + ip.String() + "/.autopolicy/identity.json")
+		identity, err = S.http_get("http://" + ip.String() + "/.autopolicy/identity.json")
 		if err == nil {
-			println(string(foo))
-			break // success
-		}
+			// TODO: parse and ammend identity (me, iface, mac, ip)
+			break
+		} // success
 
 		// retry
 		dbg(2, "auth", "%s/%s: could not fetch identity: %s", st.iface, st.mac, err)
@@ -70,12 +72,16 @@ func (S *Switch) auth(st *State) {
 			return
 		}
 
-		// TODO: curl it!
+		// curl it!
 		dbg(3, "auth", "%s/%s: authorizing (try %d)", st.iface, st.mac, i)
+		profile, err = S.http_post(S.opts.authserver + "/.autopolicy/v1/authorize", identity)
+		if err == nil {
+			println(string(profile))
+			break  // success
+		}
 
-		// TODO
-		break // success!
-
+		// retry
+		dbg(2, "auth", "%s/%s: could not authorize: %s", st.iface, st.mac, err)
 		time.Sleep(AUTHZ_RETRY_TIMEOUT)
 	}
 	dbg(1, "auth", "%s/%s: authorized", st.iface, st.mac)
@@ -97,7 +103,7 @@ func (S *Switch) auth(st *State) {
 			return
 		}
 
-		// TODO
+		// TODO: use profile
 		dbg(3, "auth", "%s/%s: provisioning (try %d)", st.iface, st.mac, i)
 		err := S.tc_provision(st.iface, st.mac)
 
