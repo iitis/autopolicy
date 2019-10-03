@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+	"github.com/valyala/fasttemplate"
 	"net/http"
 	"os/signal"
 	"os"
@@ -12,40 +14,50 @@ import (
 )
 
 const (
+	VERSION = "0.1"
+
 	AUTH_TIMEOUT = 300e9           // authentication timeout (in seconds)
 	AUTH_RETRY_TIMEOUT = 10e9      // how quickly to retry auth attempts
 
 	AUTHZ_TIMEOUT = 60e9           // authorization timeout (in seconds)
-	AUTHZ_RETRY_TIMEOUT = 10e9      // how quickly to retry authz attempts
+	AUTHZ_RETRY_TIMEOUT = 10e9     // how quickly to retry authz attempts
 
 	PROV_TIMEOUT = 3e9             // provision timeout (in seconds)
 	PROV_RETRY_TIMEOUT = 1e9       // how quickly to retry provision attempts
 )
 
 type Switch struct {
-	ctx   context.Context
-	http  http.Client
+	ctx      context.Context
+	hostname string
+	http     http.Client
 
 	opts struct {
 		dbg            int
+		me             string
 		// --
 		ifaces         []string
-		authserver     string
+		// --
+		auth_query     string
+		authz_query    string
 	}
 	
 	snifferq           chan SnifferMsg         // MAC-IP sniffer output
 	state              map[string]*State       // port-MAC states
+
+	auth_query         *fasttemplate.Template
+	authz_query        *fasttemplate.Template
 }
 
 type State struct {
 	mutex       sync.RWMutex
 	
-	// host identifiers
+	// host identifiers (immutable)
 	iface       string
 	mac         net.HardwareAddr
-	lastip      net.IP
+	tag         string      // human-readable id
 
-	// status
+	// status (mutable)
+	lastip      net.IP      // last seen IP address
 	state       int         // current state
 	since       int64       // UNIX timestamp of last state update
 	timeout     int64       // UNIX timestamp when current state times out
@@ -77,20 +89,42 @@ func (S *Switch) sigint() {
 }
 
 func main() {
+	var err error
+
 	var S Switch
 	S.ctx = context.Background()
+	S.hostname, err = os.Hostname()
+	if err != nil { dieErr("main", err) }
 
 	// command-line args
 	flag.IntVar(&S.opts.dbg, "dbg", 2, "debugging level")
-	flag.StringVar(&S.opts.authserver, "server", "http://localhost", "authorization server")
+	flag.StringVar(&S.opts.me, "me", S.hostname, "my identity, e.g. name of this host")
+	flag.StringVar(&S.opts.auth_query, "query", "http://<ip>/.autopolicy/identity.json",
+		"authentication query (HTTP GET) used to fetch the identity")
+	flag.StringVar(&S.opts.authz_query, "authz", "http://192.168.100.128:30000/.autopolicy/v1/authorize",
+		"authorization query (HTTP POST) used to fetch the profile")
 
 	flag.Parse()
 	dbgSet(S.opts.dbg)
 
+	// read interfaces
 	S.opts.ifaces = flag.Args()
 	if len(S.opts.ifaces) == 0 {
 		die("main", "no interfaces given on command-line")
 	}
+
+	// parse templates
+	q := strings.Replace(S.opts.auth_query, "://<ip>", "://<ip-host>", 1)
+	S.auth_query, err = fasttemplate.NewTemplate(q, "<", ">")
+	if err != nil { die("main", "-query template invalid: %s", err) }
+
+	q = strings.Replace(S.opts.authz_query, "://<ip>", "://<ip-host>", 1)
+	S.authz_query, err = fasttemplate.NewTemplate(q, "<", ">")
+	if err != nil { die("main", "-authz template invalid: %s", err) }
+
+	// start
+	dbg(1, "main", "ap-switch %s starting on %s", VERSION, S.hostname)
+	dbg(2, "main", "command-line options: %#v", S.opts)
 
 	// handle SIGINT
 	go S.sigint()
@@ -124,13 +158,14 @@ func main() {
 		key := fmt.Sprintf("%s/%s", msg.iface, msg.mac)
 		st, ok := S.state[key]
 		if !ok { // yes, new stuff, needs auth
-			dbg(2, "main", "new PORT/MAC %s/%s (%s)", msg.iface, msg.mac, msg.ip)
-
 			st = &State{}
 			st.mutex.Lock()
 			st.iface = msg.iface
 			st.mac = msg.mac
 			st.lastip = msg.ip
+			st.tag = fmt.Sprintf("[%s/%s]", st.iface, st.mac)
+
+			dbg(3, "main", "%s: new PORT/MAC using IP %s", st.tag, st.lastip)
 
 			S.state[key] = st
 		} else { // lets check...
@@ -138,8 +173,8 @@ func main() {
 
 			// BTW, update IP if needed
 			if !st.lastip.Equal(msg.ip) {
-				dbg(2, "main", "%s/%s: updating IP address: %s -> %s (state %d)",
-					st.iface, st.mac, st.lastip, msg.ip, st.state)
+				dbg(2, "main", "%s: updating IP address: %s -> %s (state %d)",
+					st.tag, st.lastip, msg.ip, st.state)
 				st.lastip = msg.ip
 			}
 
@@ -150,8 +185,8 @@ func main() {
 				continue
 			}
 
-			dbg(2, "main", "%s/%s: port state %d timeout after %ds",
-				msg.iface, msg.mac, st.state, (now - st.since)/1e9)
+			dbg(3, "main", "%s: port state %d timeout after %ds",
+				st.tag, st.state, (now - st.since)/1e9)
 		}
 
 		// authentication needed
@@ -161,7 +196,6 @@ func main() {
 		st.mutex.Unlock()
 
 		// request authentication
-		dbg(1, "main", "%s/%s: requesting authentication via IP %s", st.iface, st.mac, st.lastip)
 		go S.auth(st)
 	}
 }

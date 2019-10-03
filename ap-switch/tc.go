@@ -100,9 +100,10 @@ func (S *Switch) tc_init(iface string) error {
 		"action", "drop")
 }
 
-func (S *Switch) tc_provision(iface string, mac net.HardwareAddr) error {
-	return S.tc_run("filter", "add", "dev", iface, "parent", "ffff:",
+func (S *Switch) tc_provision(st *State, profile map[string]interface{}) error {
+	// TODO: use the profile
+	return S.tc_run("filter", "add", "dev", st.iface, "parent", "ffff:",
 		"prio", "1", "protocol", "ip",
-		"u32", "match", "ether", "src", mac.String(),
+		"u32", "match", "ether", "src", st.mac.String(),
 		"action", "gact", "ok")
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"bytes"
 	"io/ioutil"
 	"time"
@@ -49,12 +50,18 @@ func (S *Switch) http_post(url string, data []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
 	if err != nil { return nil, err }
 
+	req.Header.Set("Content-Type", "application/json")
+
 	resp, err := S.http.Do(req)
 	if err != nil { return nil, err }
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil { return nil, err }
+
+	if resp.StatusCode != 200 {
+		return body, fmt.Errorf("POST %s: response status %s", url, resp.Status)
+	}
 
 	return body, nil
 }
