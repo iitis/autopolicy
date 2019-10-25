@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"encoding/json"
 	"bytes"
 	"io/ioutil"
 	"time"
@@ -43,25 +43,30 @@ func (S *Switch) http_get(url string) ([]byte, error) {
 	return body, nil
 }
 
-func (S *Switch) http_post(url string, data []byte) ([]byte, error) {
+func (S *Switch) http_post_json(url string, data interface{}) (interface{}, int, error) {
 	ctx, cancel := context.WithTimeout(S.ctx, HTTP_TIMEOUT)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(data))
-	if err != nil { return nil, err }
+	// prepare
+	databytes, err := json.Marshal(data)
+	if err != nil { return nil, -1, err }
 
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(databytes))
+	if err != nil { return nil, -2, err }
+
+	// do the query
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := S.http.Do(req)
-	if err != nil { return nil, err }
+	if err != nil { return nil, -3, err }
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil { return nil, err }
+	// decode
+	bodybytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil || len(bodybytes) == 0 { return nil, resp.StatusCode, err }
 
-	if resp.StatusCode != 200 {
-		return body, fmt.Errorf("POST %s: response status %s", url, resp.Status)
-	}
+	var body interface{}
+	err = json.Unmarshal(bodybytes, &body)
+	if err != nil { return bodybytes, resp.StatusCode, err }
 
-	return body, nil
+	return body, resp.StatusCode, nil
 }

@@ -62,8 +62,15 @@ func (S *Switch) auth(st *State) {
 			dbg(2, "auth", "%s: authorization timeout: aborting", tag)
 			return
 		default:
-			dbg(2, "auth", "%s: authorization failed (try %d): %s", tag, i, err)
-			time.Sleep(AUTHZ_RETRY_TIMEOUT)
+			if profile == nil {
+				dbg(2, "auth", "%s: authorization failed (try %d): %s", tag, i, err)
+				time.Sleep(AUTHZ_RETRY_TIMEOUT)
+			} else {
+				// access denied for next 5-15 min
+				dbg(2, "auth", "%s: access denied: %s", tag, err)
+				st.auth_move_state(STATE_OFF, (300 + rand.Int63n(600)) * 1e9)
+				return
+			}
 		}
 	}
 
@@ -120,11 +127,10 @@ func (S *Switch) auth_compile_target(template *fasttemplate.Template, st *State,
 }
 
 func (S *Switch) auth_identity_ammend(identity map[string]interface{}, st *State, lastip net.IP) {
-	identity["timestamp"] = time.Now().Unix()
-	identity["me"] = S.opts.me
-	identity["iface"] = st.iface
-	identity["mac"] = st.mac.String()
-	identity["lastip"] = lastip.String()
+	identity["@switch"] = S.opts.me
+	identity["@port"] = st.iface
+	identity["@mac"] = st.mac.String()
+	identity["@ip"] = lastip.String()
 }
 
 func (S *Switch) auth_authenticate(st *State) (
@@ -171,6 +177,8 @@ func (S *Switch) auth_authorize(st *State, identity map[string]interface{}) (
 	profile map[string]interface{},
 	err error,
 ) {
+	var ok bool
+
 	// copy state
 	st.mutex.RLock()
 	timeout := st.timeout
@@ -186,24 +194,48 @@ func (S *Switch) auth_authorize(st *State, identity map[string]interface{}) (
 	// where to fetch the profile from?
 	target := S.auth_compile_target(S.authz_query, st, lastip)
 
-	// encode the identity back to JSON
-	var identity_bytes []byte
-	identity_bytes, err = json.Marshal(identity)
-	if err != nil { return }
-
 	// curl it!
 	dbg(4, "auth", "%s: fetching profile from %s", st.tag, target)
-	var profile_bytes []byte
-	profile_bytes, err = S.http_post(target, identity_bytes)
-	if err != nil { return nil, err }
+	out, status, err := S.http_post_json(target, identity)
+	if err != nil {
+		switch {
+		case out != nil:
+			return nil, fmt.Errorf("HTTP status %d: invalid JSON: %s: %s", status, err, out)
+		case status > 0:
+			return nil, fmt.Errorf("HTTP status %d: no body: %s", status, err)	
+		default:
+			return nil, fmt.Errorf("HTTP error: %s", err)	
+		}
+	}	
 
-	// parse
-	profile = make(map[string]interface{})
-	err = json.Unmarshal(profile_bytes, &profile)
-	if err != nil { return nil, fmt.Errorf("JSON parser: %s in: %s", err, string(profile_bytes)) }
+	// received an object?
+	profile, ok = out.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("HTTP status %d: not an object: %s", status, out)
+	}
+
+	// status != 200 means authorization failed
+	if status != 200 {
+		if e, ok := profile["error"].(map[string]interface{}); ok {
+			if d,ok := e["details"]; ok && d != nil {
+				err = fmt.Errorf("%s (%v)", e["message"], d)
+			} else {
+				err = fmt.Errorf("%s", e["message"])
+			}
+		} else {
+			err = fmt.Errorf("HTTP status %d: %s", profile)
+		}
+
+		// if 403 (HTTP Forbidden), make it permanent
+		if status == 403 {
+			return profile, err
+		} else {
+			return nil, err
+		}
+	}
 
 	// ammend
-	profile["timestamp"] = time.Now().Unix()
+	profile["@timestamp"] = time.Now().Unix()
 
 	return
 }

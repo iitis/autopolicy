@@ -101,7 +101,7 @@ func main() {
 	flag.StringVar(&S.opts.me, "me", S.hostname, "my identity, e.g. name of this host")
 	flag.StringVar(&S.opts.auth_query, "query", "http://<ip>/.autopolicy/identity.json",
 		"authentication query (HTTP GET) used to fetch the identity")
-	flag.StringVar(&S.opts.authz_query, "authz", "http://192.168.100.128:30000/.autopolicy/v1/authorize",
+	flag.StringVar(&S.opts.authz_query, "authz", "http://192.168.100.128:30000/v1/authorize",
 		"authorization query (HTTP POST) used to fetch the profile")
 
 	flag.Parse()
