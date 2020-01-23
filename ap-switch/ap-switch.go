@@ -16,14 +16,14 @@ import (
 const (
 	VERSION = "0.1"
 
-	AUTH_TIMEOUT = 300e9           // authentication timeout (in seconds)
-	AUTH_RETRY_TIMEOUT = 10e9      // how quickly to retry auth attempts
+	AUTH_TIMEOUT = 60              // authentication timeout (in seconds)
+	AUTH_RETRY_TIMEOUT = 19        // how quickly to retry auth attempts
 
-	AUTHZ_TIMEOUT = 60e9           // authorization timeout (in seconds)
-	AUTHZ_RETRY_TIMEOUT = 10e9     // how quickly to retry authz attempts
+	AUTHZ_TIMEOUT = 10             // authorization timeout (in seconds)
+	AUTHZ_RETRY_TIMEOUT = 3        // how quickly to retry authz attempts
 
-	PROV_TIMEOUT = 3e9             // provision timeout (in seconds)
-	PROV_RETRY_TIMEOUT = 1e9       // how quickly to retry provision attempts
+	PROV_TIMEOUT = 3               // provision timeout (in seconds)
+	PROV_RETRY_TIMEOUT = 1         // how quickly to retry provision attempts
 )
 
 type Switch struct {
@@ -41,6 +41,7 @@ type Switch struct {
 		authz_query    string
 	}
 	
+	tcpref             int                     // global TC preference counter
 	snifferq           chan SnifferMsg         // MAC-IP sniffer output
 	state              map[string]*State       // port-MAC states
 
@@ -48,6 +49,7 @@ type Switch struct {
 	authz_query        *fasttemplate.Template
 }
 
+// State represents device state
 type State struct {
 	mutex       sync.RWMutex
 	
@@ -55,6 +57,7 @@ type State struct {
 	iface       string
 	mac         net.HardwareAddr
 	tag         string      // human-readable id
+	tc_chain    string
 
 	// status (mutable)
 	lastip      net.IP      // last seen IP address
@@ -109,9 +112,7 @@ func main() {
 
 	// read interfaces
 	S.opts.ifaces = flag.Args()
-	if len(S.opts.ifaces) == 0 {
-		die("main", "no interfaces given on command-line")
-	}
+	if len(S.opts.ifaces) == 0 { die("main", "no interfaces given on command-line") }
 
 	// parse templates
 	q := strings.Replace(S.opts.auth_query, "://<ip>", "://<ip-host>", 1)
@@ -130,6 +131,7 @@ func main() {
 	go S.sigint()
 
 	// prepare tc
+	S.tcpref = 1
 	for _, iface := range S.opts.ifaces {
 		S.tc_cleanup(iface) // ignore errors
 		if err := S.tc_init(iface); err != nil {
@@ -163,6 +165,7 @@ func main() {
 			st.iface = msg.iface
 			st.mac = msg.mac
 			st.lastip = msg.ip
+			st.tc_chain = fmt.Sprintf("%d", len(S.state) + 1)
 			st.tag = fmt.Sprintf("[%s/%s]", st.iface, st.mac)
 
 			dbg(3, "main", "%s: new PORT/MAC using IP %s", st.tag, st.lastip)
@@ -196,6 +199,6 @@ func main() {
 		st.mutex.Unlock()
 
 		// request authentication
-		go S.auth(st)
+		go S.state_start_auth(st)
 	}
 }

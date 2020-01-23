@@ -26,21 +26,19 @@ func (S *Switch) http_init() {
 	}
 }
 
-func (S *Switch) http_get(url string) ([]byte, error) {
+func (S *Switch) http_get(url string) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(S.ctx, HTTP_TIMEOUT)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil { return nil, err }
+	if err != nil { return nil, -1, err }
 
 	resp, err := S.http.Do(req)
-	if err != nil { return nil, err }
+	if err != nil { return nil, -1, err }
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil { return nil, err }
-
-	return body, nil
+	bytes, err := ioutil.ReadAll(resp.Body)
+	return bytes, resp.StatusCode, err
 }
 
 func (S *Switch) http_post_json(url string, data interface{}) (interface{}, int, error) {

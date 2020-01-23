@@ -20,6 +20,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"log"
 )
@@ -51,6 +52,10 @@ func die(where string, fmt string, v ...interface{}) {
 
 func dieErr(where string, err error) {
 	dbgLogger.Fatalf("%s: fatal error: %s\n", where, err.Error())
+}
+
+func E(format string, v ...interface{}) error {
+	return fmt.Errorf(format, v...)
 }
 
 func init() {
