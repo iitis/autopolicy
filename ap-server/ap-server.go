@@ -22,6 +22,8 @@ type Server struct {
 		//--
 		http           string
 		db             string
+		auto           bool
+		fix            bool
 	}
 
 	api     *Api
@@ -41,6 +43,8 @@ func main() {
 	flag.StringVar(&S.opts.me, "me", S.hostname, "my identity, e.g. name of this host")
 	flag.StringVar(&S.opts.http, "http", ":30000", "listen on given HTTP endpoint")
 	flag.StringVar(&S.opts.db, "db", "./db", "path to filesystem database")
+	flag.BoolVar(&S.opts.auto, "auto", true, "automatically add first seen MAC on a port")
+	flag.BoolVar(&S.opts.fix, "fix", true, "fix missing keys in profiles (use old values)")
 	flag.Parse()
 	dbgSet(S.opts.dbg)
 

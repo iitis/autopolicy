@@ -1,3 +1,22 @@
+/*
+ * Autopolicy PoC
+ * Copyright (C) 2019-2020 IITiS PAN Gliwice <https://www.iitis.pl/>
+ * Author: Pawel Foremski <pjf@iitis.pl>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 package main
 
 import (
@@ -12,8 +31,8 @@ import (
 
 type (
 	Api struct {
-    	S        *Server
-   		rt       *httprouter.Router
+	S        *Server
+	rt       *httprouter.Router
 	}
 
 	ApiRequest struct {
@@ -117,22 +136,24 @@ func (ar *ApiRequest) Err(status int, message string, details interface{}) *ApiR
 }
 
 func (a *Api) Authorize(ar *ApiRequest) *ApiRequest {
+	S := a.S
+
 	input, ok := ar.in.(map[string]interface{})
 	if !ok { return ar.Err(http.StatusBadRequest, "invalid input", nil) }
 
 	// convert
-	id, err := NewIdentity(a.S, input)
+	id, err := S.NewIdentity(input)
+	if err == nil { err = id.CheckRequired() }
 	if err != nil { return ar.Err(http.StatusBadRequest, "invalid identity", err.Error()) }
 
-	// authorize
-	if err := a.S.db.Authorize(id); err != nil {
-		return ar.Err(http.StatusForbidden, err.Error(), nil)
-	}
+	// verify it's not a downgrade attack
+	id, err = S.db.Verify(id)
+	if err != nil { return ar.Err(http.StatusForbidden, err.Error(), nil) } // NB: permanent error
 
-	// mock profile
-	profile := make(map[string]interface{})
-	profile["id"] = id
+	// authorize, fetch the traffic profile
+	pf, err := S.db.Authorize(id)
+	if err != nil { return ar.Err(http.StatusServiceUnavailable, err.Error(), nil) } // NB: will retry
 	
-	ar.out = profile
+	ar.out = pf
 	return ar
 }
